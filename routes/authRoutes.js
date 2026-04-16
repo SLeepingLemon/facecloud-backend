@@ -1,0 +1,38 @@
+/**
+ * authRoutes.js
+ * Authentication routes.
+ * Updated: added /register-admin route (requires ADMIN JWT).
+ *
+ * Place this file at: src/routes/authRoutes.js
+ */
+
+const express = require("express");
+const router = express.Router();
+const {
+  register,
+  registerByAdmin,
+  login,
+  googleAuth,
+  getAllUsers,
+} = require("../controllers/authController");
+const { authenticate, authorize } = require("../middleware/authMiddleware");
+
+// Protected — admin creates any role account (used by ManageUsers page)
+router.post(
+  "/register-admin",
+  authenticate,
+  authorize(["ADMIN"]),
+  registerByAdmin,
+);
+
+// Public — login (email + password)
+router.post("/login", login);
+
+// Public — Google SSO login
+// Body: { credential } — ID token from Google's sign-in button
+router.post("/google", googleAuth);
+
+// Protected — list all users (for teacher assignment dropdowns etc.)
+router.get("/users", authenticate, authorize(["ADMIN"]), getAllUsers);
+
+module.exports = router;

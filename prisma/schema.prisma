@@ -1,0 +1,184 @@
+// ============================================================
+//  schema.prisma
+//
+//  HOW TO USE THIS FILE:
+//  1. Copy everything below this comment block
+//  2. Paste it into your existing schema.prisma file
+//     (replace the entire contents)
+//  3. Save the file
+//  4. Run these two commands in your backend terminal:
+//
+//     npx prisma migrate dev --name add_pending_status
+//     npx prisma generate
+//
+//  What changed from the previous schema:
+//  - Replaced "name String" on Student with:
+//      surname       String   — e.g. "DELA CRUZ"
+//      firstName     String   — e.g. "Juan"
+//      middleInitial String?  — e.g. "R" (optional)
+//  - datasetName is still present (Pi face recognition bridge)
+//  - Everything else is unchanged
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String?  // nullable — Google SSO users have no password
+  googleId  String?  @unique  // Google subject ID for SSO users
+  role      Role
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  taughtSubjects SubjectTeacher[]
+
+  @@map("users")
+}
+
+model Section {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique  // e.g. "BSCPE3-3"
+  createdAt DateTime @default(now())
+
+  // No foreign key relation to Student — section is stored as a plain
+  // string on Student for backward compatibility. The sections table
+  // is the managed list of valid sections, not an FK constraint.
+
+  @@map("sections")
+}
+
+model Student {
+  id            Int      @id @default(autoincrement())
+  studentId     String   @unique  // e.g. "2024-12345-MN-0"
+  surname       String            // e.g. "DELA CRUZ"        — always UPPERCASE
+  firstName     String            // e.g. "Juan"
+  middleInitial String?           // e.g. "R"               — optional
+  section       String            // e.g. "BSCPE3-3" — kept as string for compatibility
+  datasetName   String?  @unique  // e.g. "DELA CRUZ_12345" — Pi face recognition key
+  faceData      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  enrollments Enrollment[]
+  attendances AttendanceRecord[]
+
+  @@map("students")
+}
+
+model Subject {
+  id          Int      @id @default(autoincrement())
+  name        String
+  code        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  teachers    SubjectTeacher[]
+  enrollments Enrollment[]
+  sessions    AttendanceSession[]
+  schedules   SubjectSchedule[]
+
+  @@map("subjects")
+}
+
+model SubjectSchedule {
+  id        Int      @id @default(autoincrement())
+  subjectId Int
+  dayOfWeek Int      // 0=Sun, 1=Mon, … 6=Sat
+  startTime String   // "08:00"
+  endTime   String   // "10:00"
+  createdAt DateTime @default(now())
+
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@map("subject_schedules")
+}
+
+model SubjectTeacher {
+  id        Int @id @default(autoincrement())
+  subjectId Int
+  teacherId Int
+
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacher User    @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@unique([subjectId, teacherId])
+  @@map("subject_teachers")
+}
+
+model Enrollment {
+  id        Int      @id @default(autoincrement())
+  studentId Int
+  subjectId Int
+  createdAt DateTime @default(now())
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, subjectId])
+  @@map("enrollments")
+}
+
+model AttendanceSession {
+  id             Int           @id @default(autoincrement())
+  subjectId      Int
+  date           DateTime
+  scheduledStart DateTime
+  scheduledEnd   DateTime
+  actualStart    DateTime?
+  actualEnd      DateTime?
+  status         SessionStatus @default(SCHEDULED)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  subject Subject            @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  records AttendanceRecord[]
+
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
+  id          Int              @id @default(autoincrement())
+  sessionId   Int
+  studentId   Int
+  arrivalTime DateTime?
+  status      AttendanceStatus @default(PENDING)
+  remarks     String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  session AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student Student           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, studentId])
+  @@map("attendance_records")
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+}
+
+enum SessionStatus {
+  SCHEDULED
+  ONGOING
+  COMPLETED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PENDING   // Waiting — session started but student hasn't scanned yet
+  PRESENT
+  LATE
+  ABSENT    // Only assigned when session ends and student never scanned
+}

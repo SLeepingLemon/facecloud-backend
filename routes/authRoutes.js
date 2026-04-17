@@ -14,6 +14,8 @@ const {
   login,
   googleAuth,
   getAllUsers,
+  updateUser,
+  deleteUser,
 } = require("../controllers/authController");
 const { authenticate, authorize } = require("../middleware/authMiddleware");
 
@@ -34,5 +36,11 @@ router.post("/google", googleAuth);
 
 // Protected — list all users (for teacher assignment dropdowns etc.)
 router.get("/users", authenticate, authorize(["ADMIN"]), getAllUsers);
+
+// Protected — update user name / email (admin only)
+router.put("/users/:id", authenticate, authorize(["ADMIN"]), updateUser);
+
+// Protected — delete user (admin only, cannot delete self)
+router.delete("/users/:id", authenticate, authorize(["ADMIN"]), deleteUser);
 
 module.exports = router;

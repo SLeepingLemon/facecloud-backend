@@ -337,11 +337,103 @@ const googleAuth = async (req, res) => {
   }
 };
 
+// ─────────────────────────────────────────────
+// Update user — name and/or email
+// PUT /api/auth/users/:id
+// Admin only
+// ─────────────────────────────────────────────
+const updateUser = async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const { name, email } = req.body;
+
+    if (!name && !email) {
+      return res
+        .status(400)
+        .json({ message: "Provide at least a name or email to update" });
+    }
+
+    // Check user exists
+    const existing = await prisma.user.findUnique({ where: { id: userId } });
+    if (!existing) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Check email conflict if email is changing
+    if (email && email.trim().toLowerCase() !== existing.email.toLowerCase()) {
+      const conflict = await prisma.user.findUnique({
+        where: { email: email.trim().toLowerCase() },
+      });
+      if (conflict) {
+        return res
+          .status(400)
+          .json({ message: "This email is already used by another account" });
+      }
+    }
+
+    const data = {};
+    if (name) data.name = name.trim();
+    if (email) data.email = email.trim().toLowerCase();
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data,
+      select: { id: true, name: true, email: true, role: true },
+    });
+
+    console.log(`✅ User updated: ${updated.email} — ${updated.name}`);
+    res.json({ message: "User updated successfully", user: updated });
+  } catch (error) {
+    console.error("❌ Update user error:", error);
+    res
+      .status(500)
+      .json({ message: "Failed to update user", error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────
+// Delete user
+// DELETE /api/auth/users/:id
+// Admin only — cannot delete own account
+// ─────────────────────────────────────────────
+const deleteUser = async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const requesterId = req.user.userId;
+
+    if (userId === requesterId) {
+      return res
+        .status(400)
+        .json({ message: "You cannot delete your own account" });
+    }
+
+    const existing = await prisma.user.findUnique({ where: { id: userId } });
+    if (!existing) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Remove teacher assignments from subjects first
+    await prisma.subjectTeacher.deleteMany({ where: { teacherId: userId } });
+
+    await prisma.user.delete({ where: { id: userId } });
+
+    console.log(`✅ User deleted: ${existing.email}`);
+    res.json({ message: `Account for ${existing.name} deleted successfully` });
+  } catch (error) {
+    console.error("❌ Delete user error:", error);
+    res
+      .status(500)
+      .json({ message: "Failed to delete user", error: error.message });
+  }
+};
+
 module.exports = {
   register,
   registerByAdmin,
   login,
   googleAuth,
   getAllUsers,
+  updateUser,
+  deleteUser,
   VALID_TITLES,
 };

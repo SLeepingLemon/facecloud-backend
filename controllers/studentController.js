@@ -77,29 +77,23 @@ const createStudent = async (req, res) => {
     const { studentId, surname, firstName, middleInitial, section } = req.body;
 
     if (!studentId || !surname || !firstName || !section) {
-      return res
-        .status(400)
-        .json({
-          message: "studentId, surname, firstName, and section are required",
-        });
+      return res.status(400).json({
+        message: "studentId, surname, firstName, and section are required",
+      });
     }
 
     const validSections = await getValidSections();
     if (!validSections.includes(section)) {
-      return res
-        .status(400)
-        .json({
-          message: `Invalid section. Must be one of: ${validSections.join(", ")}`,
-        });
+      return res.status(400).json({
+        message: `Invalid section. Must be one of: ${validSections.join(", ")}`,
+      });
     }
 
     const idParts = studentId.split("-");
     if (idParts.length < 2 || idParts[1].length < 1) {
-      return res
-        .status(400)
-        .json({
-          message: "Invalid Student ID format. Expected: YYYY-NNNNN-MN-N",
-        });
+      return res.status(400).json({
+        message: "Invalid Student ID format. Expected: YYYY-NNNNN-MN-N",
+      });
     }
 
     const existingById = await prisma.student.findUnique({
@@ -113,22 +107,18 @@ const createStudent = async (req, res) => {
 
     const datasetName = generateDatasetName(surname, studentId);
     if (!datasetName) {
-      return res
-        .status(400)
-        .json({
-          message: "Could not generate dataset name. Check Student ID format.",
-        });
+      return res.status(400).json({
+        message: "Could not generate dataset name. Check Student ID format.",
+      });
     }
 
     const existingByDataset = await prisma.student.findUnique({
       where: { datasetName },
     });
     if (existingByDataset) {
-      return res
-        .status(400)
-        .json({
-          message: `Dataset name "${datasetName}" is already registered.`,
-        });
+      return res.status(400).json({
+        message: `Dataset name "${datasetName}" is already registered.`,
+      });
     }
 
     const student = await prisma.student.create({
@@ -153,14 +143,12 @@ const createStudent = async (req, res) => {
       `[Student] Created: ${displayName} | ${student.studentId} | ${student.datasetName}`,
     );
 
-    res
-      .status(201)
-      .json({
-        message: "Student created successfully",
-        student,
-        displayName,
-        datasetName,
-      });
+    res.status(201).json({
+      message: "Student created successfully",
+      student,
+      displayName,
+      datasetName,
+    });
   } catch (error) {
     console.error("Error creating student:", error);
     res
@@ -180,11 +168,9 @@ const updateStudent = async (req, res) => {
     if (section) {
       const validSections = await getValidSections();
       if (!validSections.includes(section)) {
-        return res
-          .status(400)
-          .json({
-            message: `Invalid section. Must be one of: ${validSections.join(", ")}`,
-          });
+        return res.status(400).json({
+          message: `Invalid section. Must be one of: ${validSections.join(", ")}`,
+        });
       }
     }
 
@@ -201,11 +187,9 @@ const updateStudent = async (req, res) => {
         where: { datasetName: newDatasetName, NOT: { id: parseInt(id) } },
       });
       if (conflict) {
-        return res
-          .status(400)
-          .json({
-            message: `Dataset name "${newDatasetName}" is already used by another student.`,
-          });
+        return res.status(400).json({
+          message: `Dataset name "${newDatasetName}" is already used by another student.`,
+        });
       }
     }
 

@@ -52,15 +52,19 @@ const streamSession = (req, res) => {
 
 // ─────────────────────────────────────────────
 // Get ongoing session for a subject
-// GET /api/attendance/session/:subjectId
-// Fixed: orderBy uses surname (split name schema)
+// GET /api/attendance/session/:subjectId?section=BSCPE3-1
+// section is optional — if omitted returns any ONGOING session (admin use)
 // ─────────────────────────────────────────────
 const getOngoingSession = async (req, res) => {
   try {
     const { subjectId } = req.params;
+    const { section } = req.query;
+
+    const where = { subjectId: parseInt(subjectId), status: "ONGOING" };
+    if (section) where.section = section;
 
     const session = await prisma.attendanceSession.findFirst({
-      where: { subjectId: parseInt(subjectId), status: "ONGOING" },
+      where,
       include: {
         records: {
           include: { student: true },
@@ -123,17 +127,15 @@ const getOngoingSession = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────
-// [TEMPORARY] Manually start a session
+// Manually start a session
 // POST /api/attendance/session
-// Body: { subjectId, durationMinutes? }
+// Body: { subjectId, section?, durationMinutes? }
 //
-// Used for testing when the Pi is not connected.
-// Creates an ONGOING session and pre-populates
-// attendance records (ABSENT) for all enrolled students.
+// section filters which students are added and which schedule to match.
 // ─────────────────────────────────────────────
 const createSession = async (req, res) => {
   try {
-    const { subjectId, durationMinutes = 120 } = req.body;
+    const { subjectId, section, durationMinutes = 120 } = req.body;
 
     if (!subjectId) {
       return res.status(400).json({ message: "subjectId is required" });
@@ -153,9 +155,11 @@ const createSession = async (req, res) => {
       return res.status(404).json({ message: "Subject not found" });
     }
 
-    // Check if there is already an ongoing session
+    // Check if there is already an ongoing session for this subject+section
+    const existingWhere = { subjectId: parsedSubjectId, status: "ONGOING" };
+    if (section) existingWhere.section = section;
     const existing = await prisma.attendanceSession.findFirst({
-      where: { subjectId: parsedSubjectId, status: "ONGOING" },
+      where: existingWhere,
     });
     if (existing) {
       return res.status(400).json({
@@ -186,7 +190,7 @@ const createSession = async (req, res) => {
     // LATE calculation and autoClose both depend on these values.
 
     const schedulesForToday = subject.schedules.filter(
-      (s) => s.dayOfWeek === today,
+      (s) => s.dayOfWeek === today && (!section || s.section === section),
     );
 
     // Helper — convert "HH:MM" to total minutes for arithmetic
@@ -241,20 +245,23 @@ const createSession = async (req, res) => {
     const session = await prisma.attendanceSession.create({
       data: {
         subjectId: parsedSubjectId,
+        section: section || null,
         date: now,
-        scheduledStart: scheduledStart, // real class start (e.g. 07:00)
-        scheduledEnd: scheduledEnd, // real class end   (e.g. 10:00)
-        actualStart: now, // when teacher actually clicked Start
+        scheduledStart: scheduledStart,
+        scheduledEnd: scheduledEnd,
+        actualStart: now,
         status: "ONGOING",
       },
     });
 
-    // Pre-populate attendance records — one PENDING row per enrolled student
-    // Status stays PENDING until the Pi scans them (PRESENT/LATE)
-    // or the session ends (unscanned PENDING → ABSENT)
-    if (subject.enrollments.length > 0) {
+    // Pre-populate attendance records — filter by section if provided
+    const enrolledStudents = section
+      ? subject.enrollments.filter((e) => e.student.section === section)
+      : subject.enrollments;
+
+    if (enrolledStudents.length > 0) {
       await prisma.attendanceRecord.createMany({
-        data: subject.enrollments.map((e) => ({
+        data: enrolledStudents.map((e) => ({
           sessionId: session.id,
           studentId: e.studentId,
           status: "PENDING",
@@ -276,8 +283,8 @@ const createSession = async (req, res) => {
     });
 
     console.log(
-      `[Session] ✅ MANUAL START — ${subject.name} | ` +
-        `${subject.enrollments.length} students | ` +
+      `[Session] ✅ MANUAL START — ${subject.name}${section ? ` [${section}]` : ""} | ` +
+        `${enrolledStudents.length} students | ` +
         `scheduled ${scheduledStart.toLocaleTimeString()}–${scheduledEnd.toLocaleTimeString()} | ` +
         `actual start: ${now.toLocaleTimeString()}`,
     );
@@ -377,17 +384,20 @@ const updateAttendance = async (req, res) => {
 
 // ─────────────────────────────────────────────
 // Attendance report
-// GET /api/attendance/report/:subjectId
+// GET /api/attendance/report/:subjectId?section=BSCPE3-1
+// section is optional — if omitted returns all sections combined
 // ─────────────────────────────────────────────
 const getSubjectReport = async (req, res) => {
   try {
     const { subjectId } = req.params;
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, section } = req.query;
 
     const whereClause = {
       subjectId: parseInt(subjectId),
       status: "COMPLETED",
     };
+
+    if (section) whereClause.section = section;
 
     if (startDate && endDate) {
       whereClause.date = {
@@ -402,8 +412,11 @@ const getSubjectReport = async (req, res) => {
       orderBy: { date: "desc" },
     });
 
+    const enrollmentWhere = { subjectId: parseInt(subjectId) };
+    if (section) enrollmentWhere.student = { section };
+
     const enrollments = await prisma.enrollment.findMany({
-      where: { subjectId: parseInt(subjectId) },
+      where: enrollmentWhere,
       include: { student: true },
     });
 

@@ -65,10 +65,12 @@ const getTeacherSubjects = async (req, res) => {
 
 // ─────────────────────────────────────────────
 // Create new subject
+// Schedules are NOT set here — they are managed per section
+// in the Enrollment tab via enrollSectionWithSchedule.
 // ─────────────────────────────────────────────
 const createSubject = async (req, res) => {
   try {
-    const { name, code, description, teacherIds, schedules } = req.body;
+    const { name, code, description, teacherIds } = req.body;
 
     if (!name || !code) {
       return res.status(400).json({ message: "Name and code are required" });
@@ -89,7 +91,6 @@ const createSubject = async (req, res) => {
         teachers: teacherIds
           ? { create: teacherIds.map((teacherId) => ({ teacherId })) }
           : undefined,
-        schedules: schedules ? { create: schedules } : undefined,
       },
       include: {
         teachers: {
@@ -113,32 +114,20 @@ const createSubject = async (req, res) => {
 // Update subject
 // PUT /api/subjects/:id
 //
-// Updates name, code, description, and schedules.
-// Schedule update strategy:
-//   1. Delete all existing SubjectSchedule rows for this subject
-//   2. Insert the new schedule set
-// This is done in a transaction so both steps succeed or both fail.
-// findUnique is called AFTER the transaction — not inside it.
+// Updates name, code, description only.
+// Schedules are managed per section via enrollSectionWithSchedule.
 // ─────────────────────────────────────────────
 const updateSubject = async (req, res) => {
   try {
     const subjectId = parseInt(req.params.id);
-    const { name, code, description, schedules } = req.body;
+    const { name, code, description } = req.body;
 
-    console.log(`[Subject] Update requested — ID: ${subjectId}`, {
-      name,
-      code,
-      schedules,
-    });
-
-    // ── Validate required fields ──
     if (!name || !code) {
       return res
         .status(400)
         .json({ message: "Subject name and code are required" });
     }
 
-    // ── Check subject exists ──
     const existing = await prisma.subject.findUnique({
       where: { id: subjectId },
     });
@@ -146,13 +135,9 @@ const updateSubject = async (req, res) => {
       return res.status(404).json({ message: "Subject not found" });
     }
 
-    // ── Check code conflict if code is changing ──
     if (code.trim().toUpperCase() !== existing.code) {
       const codeConflict = await prisma.subject.findFirst({
-        where: {
-          code: code.trim().toUpperCase(),
-          NOT: { id: subjectId },
-        },
+        where: { code: code.trim().toUpperCase(), NOT: { id: subjectId } },
       });
       if (codeConflict) {
         return res.status(400).json({
@@ -161,32 +146,6 @@ const updateSubject = async (req, res) => {
       }
     }
 
-    // ── Validate schedules ──
-    if (!schedules || schedules.length === 0) {
-      return res
-        .status(400)
-        .json({ message: "At least one schedule is required" });
-    }
-
-    for (const s of schedules) {
-      if (
-        s.dayOfWeek === undefined ||
-        s.dayOfWeek === null ||
-        !s.startTime ||
-        !s.endTime
-      ) {
-        return res.status(400).json({
-          message: "Each schedule must have a day, start time, and end time",
-        });
-      }
-      if (s.startTime >= s.endTime) {
-        return res.status(400).json({
-          message: `Start time must be before end time (${s.startTime} – ${s.endTime})`,
-        });
-      }
-    }
-
-    // ── Step 1: Update subject name / code / description ──
     await prisma.subject.update({
       where: { id: subjectId },
       data: {
@@ -195,26 +154,7 @@ const updateSubject = async (req, res) => {
         description: description ? description.trim() : null,
       },
     });
-    console.log(`[Subject] Fields updated for ID ${subjectId}`);
 
-    // ── Step 2: Delete ALL existing schedules for this subject ──
-    const deleted = await prisma.subjectSchedule.deleteMany({
-      where: { subjectId },
-    });
-    console.log(`[Subject] Deleted ${deleted.count} old schedule(s)`);
-
-    // ── Step 3: Insert the new schedules ──
-    await prisma.subjectSchedule.createMany({
-      data: schedules.map((s) => ({
-        subjectId,
-        dayOfWeek: parseInt(s.dayOfWeek),
-        startTime: s.startTime,
-        endTime: s.endTime,
-      })),
-    });
-    console.log(`[Subject] Created ${schedules.length} new schedule(s)`);
-
-    // ── Fetch the full updated subject to return to frontend ──
     const updatedSubject = await prisma.subject.findUnique({
       where: { id: subjectId },
       include: {
@@ -229,16 +169,14 @@ const updateSubject = async (req, res) => {
     });
 
     console.log(
-      `[Subject] ✅ Updated: ${updatedSubject.name} (${updatedSubject.code}) — ${updatedSubject.schedules.length} schedule(s)`,
+      `[Subject] ✅ Updated: ${updatedSubject.name} (${updatedSubject.code})`,
     );
-
     res.json({
       message: `Subject "${updatedSubject.name}" updated successfully`,
       subject: updatedSubject,
     });
   } catch (error) {
     console.error("[Subject] Update error:", error.message);
-    console.error("[Subject] Full error:", error);
     res
       .status(500)
       .json({ message: "Failed to update subject", error: error.message });
@@ -441,6 +379,164 @@ const enrollSection = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────
+// Enroll entire section with a per-section schedule
+// POST /api/subjects/enroll-section-schedule
+// Body: { subjectId, section, schedules: [{dayOfWeek, startTime, endTime}] }
+// ─────────────────────────────────────────────
+const enrollSectionWithSchedule = async (req, res) => {
+  try {
+    const { subjectId, section, schedules } = req.body;
+    if (!subjectId || !section) {
+      return res
+        .status(400)
+        .json({ message: "subjectId and section are required" });
+    }
+    if (!schedules || schedules.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "At least one schedule is required" });
+    }
+
+    for (const s of schedules) {
+      if (
+        s.dayOfWeek === undefined ||
+        s.dayOfWeek === null ||
+        !s.startTime ||
+        !s.endTime
+      ) {
+        return res.status(400).json({
+          message: "Each schedule must have a day, start time, and end time",
+        });
+      }
+      if (s.startTime >= s.endTime) {
+        return res.status(400).json({
+          message: `Start time must be before end time (${s.startTime} – ${s.endTime})`,
+        });
+      }
+    }
+
+    const parsedSubjectId = parseInt(subjectId);
+    const subject = await prisma.subject.findUnique({
+      where: { id: parsedSubjectId },
+      select: { id: true, name: true },
+    });
+    if (!subject) return res.status(404).json({ message: "Subject not found" });
+
+    // Check section isn't already enrolled (has schedules for this subject)
+    const existingSchedules = await prisma.subjectSchedule.findFirst({
+      where: { subjectId: parsedSubjectId, section },
+    });
+    if (existingSchedules) {
+      return res.status(400).json({
+        message: `Section "${section}" is already enrolled in this subject.`,
+      });
+    }
+
+    const students = await prisma.student.findMany({
+      where: { section },
+      select: { id: true },
+    });
+    if (students.length === 0) {
+      return res
+        .status(404)
+        .json({ message: `No students found in section "${section}"` });
+    }
+
+    // Enroll students (skip already enrolled)
+    const existing = await prisma.enrollment.findMany({
+      where: { subjectId: parsedSubjectId },
+      select: { studentId: true },
+    });
+    const alreadyEnrolled = new Set(existing.map((e) => e.studentId));
+    const toEnroll = students.filter((s) => !alreadyEnrolled.has(s.id));
+
+    if (toEnroll.length > 0) {
+      await prisma.enrollment.createMany({
+        data: toEnroll.map((s) => ({
+          subjectId: parsedSubjectId,
+          studentId: s.id,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    // Create section-specific schedules
+    await prisma.subjectSchedule.createMany({
+      data: schedules.map((s) => ({
+        subjectId: parsedSubjectId,
+        section,
+        dayOfWeek: parseInt(s.dayOfWeek),
+        startTime: s.startTime,
+        endTime: s.endTime,
+      })),
+      skipDuplicates: true,
+    });
+
+    console.log(
+      `[Subject] ✅ Section "${section}" enrolled into "${subject.name}" with ${schedules.length} schedule(s), ${toEnroll.length} new students`,
+    );
+    res.status(201).json({
+      message: `Section "${section}" enrolled into "${subject.name}". ${toEnroll.length} new student(s) added, ${schedules.length} schedule(s) created.`,
+      enrolled: toEnroll.length,
+      skipped: students.length - toEnroll.length,
+    });
+  } catch (error) {
+    console.error("Error enrolling section with schedule:", error);
+    res
+      .status(500)
+      .json({ message: "Failed to enroll section", error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────
+// Remove an entire section from a subject
+// POST /api/subjects/remove-section
+// Body: { subjectId, section }
+// Removes enrollments for students in that section + removes section schedules
+// ─────────────────────────────────────────────
+const removeSectionFromSubject = async (req, res) => {
+  try {
+    const { subjectId, section } = req.body;
+    if (!subjectId || !section) {
+      return res
+        .status(400)
+        .json({ message: "subjectId and section are required" });
+    }
+
+    const parsedSubjectId = parseInt(subjectId);
+
+    // Find all students in the section
+    const students = await prisma.student.findMany({
+      where: { section },
+      select: { id: true },
+    });
+    const studentIds = students.map((s) => s.id);
+
+    // Remove their enrollments from this subject
+    const removed = await prisma.enrollment.deleteMany({
+      where: { subjectId: parsedSubjectId, studentId: { in: studentIds } },
+    });
+
+    // Remove all schedules for this section from the subject
+    const deletedScheds = await prisma.subjectSchedule.deleteMany({
+      where: { subjectId: parsedSubjectId, section },
+    });
+
+    console.log(
+      `[Subject] ✅ Section "${section}" removed — ${removed.count} enrollments, ${deletedScheds.count} schedules deleted`,
+    );
+    res.json({
+      message: `Section "${section}" removed. ${removed.count} enrollment(s) and ${deletedScheds.count} schedule(s) deleted.`,
+    });
+  } catch (error) {
+    console.error("Error removing section:", error);
+    res
+      .status(500)
+      .json({ message: "Failed to remove section", error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────
 // Remove student enrollment
 // ─────────────────────────────────────────────
 const removeEnrollment = async (req, res) => {
@@ -468,5 +564,7 @@ module.exports = {
   removeTeacher,
   enrollStudent,
   enrollSection,
+  enrollSectionWithSchedule,
+  removeSectionFromSubject,
   removeEnrollment,
 };

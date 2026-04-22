@@ -25,17 +25,16 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
   id        Int      @id @default(autoincrement())
   name      String
   email     String   @unique
-  password  String?  // nullable — Google SSO users have no password
-  googleId  String?  @unique  // Google subject ID for SSO users
+  password  String? // nullable — Google SSO users have no password
+  googleId  String?  @unique // Google subject ID for SSO users
   role      Role
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -47,7 +46,7 @@ model User {
 
 model Section {
   id        Int      @id @default(autoincrement())
-  name      String   @unique  // e.g. "BSCPE3-3"
+  name      String   @unique // e.g. "BSCPE3-3"
   createdAt DateTime @default(now())
 
   // No foreign key relation to Student — section is stored as a plain
@@ -59,12 +58,12 @@ model Section {
 
 model Student {
   id            Int      @id @default(autoincrement())
-  studentId     String   @unique  // e.g. "2024-12345-MN-0"
-  surname       String            // e.g. "DELA CRUZ"        — always UPPERCASE
-  firstName     String            // e.g. "Juan"
-  middleInitial String?           // e.g. "R"               — optional
-  section       String            // e.g. "BSCPE3-3" — kept as string for compatibility
-  datasetName   String?  @unique  // e.g. "DELA CRUZ_12345" — Pi face recognition key
+  studentId     String   @unique // e.g. "2024-12345-MN-0"
+  surname       String // e.g. "DELA CRUZ"        — always UPPERCASE
+  firstName     String // e.g. "Juan"
+  middleInitial String? // e.g. "R"               — optional
+  section       String // e.g. "BSCPE3-3" — kept as string for compatibility
+  datasetName   String?  @unique // e.g. "DELA CRUZ_12345" — Pi face recognition key
   faceData      String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -94,13 +93,15 @@ model Subject {
 model SubjectSchedule {
   id        Int      @id @default(autoincrement())
   subjectId Int
-  dayOfWeek Int      // 0=Sun, 1=Mon, … 6=Sat
-  startTime String   // "08:00"
-  endTime   String   // "10:00"
+  section   String   @default("") // e.g. "BSCPE3-1" — schedule is per section
+  dayOfWeek Int // 0=Sun, 1=Mon, … 6=Sat
+  startTime String // "08:00"
+  endTime   String // "10:00"
   createdAt DateTime @default(now())
 
   subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
 
+  @@unique([subjectId, section, dayOfWeek, startTime])
   @@map("subject_schedules")
 }
 
@@ -132,6 +133,7 @@ model Enrollment {
 model AttendanceSession {
   id             Int           @id @default(autoincrement())
   subjectId      Int
+  section        String? // which section this session is for (null = legacy/unfiltered)
   date           DateTime
   scheduledStart DateTime
   scheduledEnd   DateTime
@@ -177,8 +179,8 @@ enum SessionStatus {
 }
 
 enum AttendanceStatus {
-  PENDING   // Waiting — session started but student hasn't scanned yet
+  PENDING // Waiting — session started but student hasn't scanned yet
   PRESENT
   LATE
-  ABSENT    // Only assigned when session ends and student never scanned
+  ABSENT // Only assigned when session ends and student never scanned
 }

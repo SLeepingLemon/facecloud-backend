@@ -153,6 +153,18 @@ router.post(
   subjectController.enrollSection,
 );
 router.post(
+  "/subjects/enroll-section-schedule",
+  authenticate,
+  authorize(["ADMIN"]),
+  subjectController.enrollSectionWithSchedule,
+);
+router.post(
+  "/subjects/remove-section",
+  authenticate,
+  authorize(["ADMIN"]),
+  subjectController.removeSectionFromSubject,
+);
+router.post(
   "/subjects",
   authenticate,
   authorize(["ADMIN"]),

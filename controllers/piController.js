@@ -287,11 +287,13 @@ const getActiveSubject = async (req, res) => {
     const { scheduledStart, scheduledEnd } =
       buildScheduleDateTimes(matchedSchedule);
 
-    // Step 3 — Check if a session is already ONGOING for this subject
+    // Step 3 — Check if a session is already ONGOING for this subject+section
+    const sessionSection = matchedSchedule.section || null;
     let session = await prisma.attendanceSession.findFirst({
       where: {
         subjectId: matchedSubject.id,
         status: "ONGOING",
+        section: sessionSection,
       },
       include: {
         records: { include: { student: true } },
@@ -307,13 +309,17 @@ const getActiveSubject = async (req, res) => {
       );
 
       const enrollments = await prisma.enrollment.findMany({
-        where: { subjectId: matchedSubject.id },
+        where: {
+          subjectId: matchedSubject.id,
+          ...(sessionSection ? { student: { section: sessionSection } } : {}),
+        },
         include: { student: true },
       });
 
       session = await prisma.attendanceSession.create({
         data: {
           subjectId: matchedSubject.id,
+          section: matchedSchedule.section || null,
           date: now,
           scheduledStart: scheduledStart, // e.g. today at 08:00
           scheduledEnd: scheduledEnd, // e.g. today at 10:00 — THIS is what autoClose uses
@@ -731,6 +737,66 @@ const registerStudent = async (req, res) => {
     console.log(
       `[PI] ✅ Student registered: ${displayName} | ${student.studentId} | ${student.datasetName}`,
     );
+
+    // Auto-enroll the new student in all subjects the section is enrolled in
+    const sectionSchedules = await prisma.subjectSchedule.findMany({
+      where: { section: student.section },
+      select: { subjectId: true },
+    });
+
+    const subjectIds = [...new Set(sectionSchedules.map((s) => s.subjectId))];
+
+    if (subjectIds.length > 0) {
+      await prisma.enrollment.createMany({
+        data: subjectIds.map((subjectId) => ({
+          studentId: student.id,
+          subjectId,
+        })),
+        skipDuplicates: true,
+      });
+
+      console.log(
+        `[PI] Auto-enrolled ${displayName} in ${subjectIds.length} subject(s) for section ${student.section}`,
+      );
+
+      // Add PENDING record to any active session for the student's section
+      for (const subjectId of subjectIds) {
+        const ongoingSession = await prisma.attendanceSession.findFirst({
+          where: {
+            subjectId,
+            status: "ONGOING",
+            OR: [{ section: student.section }, { section: null }],
+          },
+        });
+
+        if (ongoingSession) {
+          try {
+            const newRecord = await prisma.attendanceRecord.create({
+              data: {
+                sessionId: ongoingSession.id,
+                studentId: student.id,
+                status: "PENDING",
+              },
+              include: { student: true },
+            });
+
+            broadcast(ongoingSession.id, "attendance_update", {
+              sessionId: ongoingSession.id,
+              record: newRecord,
+              markedBy: "system_enrollment",
+            });
+
+            console.log(
+              `[PI] Added ${displayName} to active session ${ongoingSession.id} as PENDING`,
+            );
+          } catch {
+            console.warn(
+              `[PI] Attendance record already exists for student ${student.id} in session ${ongoingSession.id}`,
+            );
+          }
+        }
+      }
+    }
 
     res.status(201).json({
       message: "Student registered successfully",

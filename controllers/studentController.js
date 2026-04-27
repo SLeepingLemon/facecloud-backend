@@ -15,6 +15,7 @@
  */
 
 const prisma = require("../utils/prisma");
+const { broadcast } = require("../utils/sseManager");
 
 // ─────────────────────────────────────────────
 // Constants — must match register_student.py and ManageClasses.jsx
@@ -207,6 +208,77 @@ const updateStudent = async (req, res) => {
         datasetName: newDatasetName,
       },
     });
+
+    // If section changed, sync enrollments to match the new section
+    if (section && section !== current.section) {
+      const oldSection = current.section;
+      const newSection = section;
+
+      const [oldSchedules, newSchedules] = await Promise.all([
+        prisma.subjectSchedule.findMany({
+          where: { section: oldSection },
+          select: { subjectId: true },
+        }),
+        prisma.subjectSchedule.findMany({
+          where: { section: newSection },
+          select: { subjectId: true },
+        }),
+      ]);
+
+      const oldSubjectIds = [...new Set(oldSchedules.map((s) => s.subjectId))];
+      const newSubjectIds = [...new Set(newSchedules.map((s) => s.subjectId))];
+
+      // Remove enrollments exclusive to the old section
+      const toRemove = oldSubjectIds.filter((id) => !newSubjectIds.includes(id));
+      if (toRemove.length > 0) {
+        await prisma.enrollment.deleteMany({
+          where: { studentId: student.id, subjectId: { in: toRemove } },
+        });
+      }
+
+      // Add enrollments exclusive to the new section
+      const toAdd = newSubjectIds.filter((id) => !oldSubjectIds.includes(id));
+      if (toAdd.length > 0) {
+        await prisma.enrollment.createMany({
+          data: toAdd.map((subjectId) => ({ studentId: student.id, subjectId })),
+          skipDuplicates: true,
+        });
+
+        // Add PENDING record to any active session for the new section
+        for (const subjectId of toAdd) {
+          const ongoingSession = await prisma.attendanceSession.findFirst({
+            where: {
+              subjectId,
+              status: "ONGOING",
+              OR: [{ section: newSection }, { section: null }],
+            },
+          });
+
+          if (ongoingSession) {
+            try {
+              const newRecord = await prisma.attendanceRecord.create({
+                data: {
+                  sessionId: ongoingSession.id,
+                  studentId: student.id,
+                  status: "PENDING",
+                },
+                include: { student: true },
+              });
+
+              broadcast(ongoingSession.id, "attendance_update", {
+                sessionId: ongoingSession.id,
+                record: newRecord,
+                markedBy: "system_enrollment",
+              });
+            } catch {
+              console.warn(
+                `[Student] Attendance record already exists for student ${student.id} in session ${ongoingSession.id}`,
+              );
+            }
+          }
+        }
+      }
+    }
 
     res.json({ message: "Student updated successfully", student });
   } catch (error) {

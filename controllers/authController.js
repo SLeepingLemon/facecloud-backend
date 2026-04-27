@@ -92,10 +92,10 @@ const registerByAdmin = async (req, res) => {
     } = req.body;
 
     // ── Validate required common fields ──
-    if (!email || !password || !role) {
+    if (!email || !role) {
       return res
         .status(400)
-        .json({ message: "Email, password, and role are required" });
+        .json({ message: "Email and role are required" });
     }
 
     if (!["ADMIN", "TEACHER"].includes(role)) {
@@ -144,14 +144,15 @@ const registerByAdmin = async (req, res) => {
         .json({ message: "An account with this email already exists" });
     }
 
-    // ── Validate password length ──
-    if (password.length < 6) {
-      return res
-        .status(400)
-        .json({ message: "Password must be at least 6 characters" });
+    let hashedPassword = null;
+    if (password) {
+      if (password.length < 6) {
+        return res
+          .status(400)
+          .json({ message: "Password must be at least 6 characters" });
+      }
+      hashedPassword = await bcrypt.hash(password, 10);
     }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await prisma.user.create({
       data: { name, email, password: hashedPassword, role },

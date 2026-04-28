@@ -436,11 +436,6 @@ const enrollSectionWithSchedule = async (req, res) => {
       where: { section },
       select: { id: true },
     });
-    if (students.length === 0) {
-      return res
-        .status(404)
-        .json({ message: `No students found in section "${section}"` });
-    }
 
     // Enroll students (skip already enrolled)
     const existing = await prisma.enrollment.findMany({
@@ -475,8 +470,12 @@ const enrollSectionWithSchedule = async (req, res) => {
     console.log(
       `[Subject] ✅ Section "${section}" enrolled into "${subject.name}" with ${schedules.length} schedule(s), ${toEnroll.length} new students`,
     );
+    const studentMsg =
+      students.length === 0
+        ? "No students in section yet."
+        : `${toEnroll.length} new student(s) added.`;
     res.status(201).json({
-      message: `Section "${section}" enrolled into "${subject.name}". ${toEnroll.length} new student(s) added, ${schedules.length} schedule(s) created.`,
+      message: `Section "${section}" enrolled into "${subject.name}". ${studentMsg} ${schedules.length} schedule(s) created.`,
       enrolled: toEnroll.length,
       skipped: students.length - toEnroll.length,
     });

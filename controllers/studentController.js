@@ -53,6 +53,48 @@ function formatDisplayName(surname, firstName, middleInitial) {
   return `${surname.trim().toUpperCase()}, ${firstName.trim()}${mi}`;
 }
 
+// Enroll a student in every subject their section is assigned to,
+// then inject a PENDING record into any currently ONGOING session and broadcast.
+async function syncStudentToSection(studentId, section) {
+  const schedules = await prisma.subjectSchedule.findMany({
+    where: { section },
+    select: { subjectId: true },
+  });
+  const subjectIds = [...new Set(schedules.map((s) => s.subjectId))];
+  if (subjectIds.length === 0) return;
+
+  await prisma.enrollment.createMany({
+    data: subjectIds.map((subjectId) => ({ studentId, subjectId })),
+    skipDuplicates: true,
+  });
+
+  for (const subjectId of subjectIds) {
+    const ongoingSession = await prisma.attendanceSession.findFirst({
+      where: {
+        subjectId,
+        status: "ONGOING",
+        OR: [{ section }, { section: null }],
+      },
+    });
+
+    if (ongoingSession) {
+      try {
+        const newRecord = await prisma.attendanceRecord.create({
+          data: { sessionId: ongoingSession.id, studentId, status: "PENDING" },
+          include: { student: true },
+        });
+        broadcast(ongoingSession.id, "attendance_update", {
+          sessionId: ongoingSession.id,
+          record: newRecord,
+          markedBy: "system_enrollment",
+        });
+      } catch {
+        // record already exists — skip
+      }
+    }
+  }
+}
+
 // ─────────────────────────────────────────────
 // Get all students
 // ─────────────────────────────────────────────
@@ -143,6 +185,8 @@ const createStudent = async (req, res) => {
     console.log(
       `[Student] Created: ${displayName} | ${student.studentId} | ${student.datasetName}`,
     );
+
+    await syncStudentToSection(student.id, student.section);
 
     res.status(201).json({
       message: "Student created successfully",
@@ -428,6 +472,7 @@ const bulkImport = async (req, res) => {
             datasetName: finalDataset,
           },
         });
+        await syncStudentToSection(student.id, student.section);
         results.imported.push({
           name: displayName,
           studentId,

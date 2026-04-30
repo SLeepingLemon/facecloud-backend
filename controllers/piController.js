@@ -283,13 +283,9 @@ const getActiveSubject = async (req, res) => {
       });
     }
 
-    // Build exact DateTime objects for this schedule slot
-    const { scheduledStart, scheduledEnd } =
-      buildScheduleDateTimes(matchedSchedule);
-
-    // Step 3 — Check if a session is already ONGOING for this subject+section
+    // Step 3 — Return the ONGOING session for this subject+section if it exists
     const sessionSection = matchedSchedule.section || null;
-    let session = await prisma.attendanceSession.findFirst({
+    const session = await prisma.attendanceSession.findFirst({
       where: {
         subjectId: matchedSubject.id,
         status: "ONGOING",
@@ -301,57 +297,15 @@ const getActiveSubject = async (req, res) => {
       },
     });
 
-    // Step 4 — Auto-create session if none exists yet
     if (!session) {
-      console.log(
-        `[PI] Auto-creating session for ${matchedSubject.code} ` +
-          `(${toHHMM(scheduledStart)} – ${toHHMM(scheduledEnd)})`,
-      );
-
-      const enrollments = await prisma.enrollment.findMany({
-        where: {
-          subjectId: matchedSubject.id,
-          ...(sessionSection ? { student: { section: sessionSection } } : {}),
-        },
-        include: { student: true },
-      });
-
-      session = await prisma.attendanceSession.create({
-        data: {
-          subjectId: matchedSubject.id,
-          section: matchedSchedule.section || null,
-          date: now,
-          scheduledStart: scheduledStart, // e.g. today at 08:00
-          scheduledEnd: scheduledEnd, // e.g. today at 10:00 — THIS is what autoClose uses
-          status: "ONGOING",
-          actualStart: now,
-          records: {
-            create: enrollments.map((e) => ({
-              studentId: e.studentId,
-              status: "PENDING", // starts PENDING, Pi scan upgrades to PRESENT/LATE
-            })),
-          },
-        },
-        include: {
-          records: { include: { student: true } },
-          subject: { select: { name: true, code: true } },
-        },
-      });
-
-      console.log(
-        `[PI] ✅ Session ${session.id} created — ` +
-          `${enrollments.length} students pre-loaded as PENDING`,
-      );
-
-      // Notify TeacherDashboard that a new session has started
-      broadcast(session.id, "session_started", {
-        sessionId: session.id,
-        subjectId: matchedSubject.id,
-        subjectName: matchedSubject.name,
+      // Session hasn't been created yet — the server's auto-create job
+      // runs every 60 seconds and will create it within the minute.
+      return res.status(404).json({
+        message: "Session not yet started",
         subjectCode: matchedSubject.code,
-        scheduledStart: scheduledStart,
-        scheduledEnd: scheduledEnd,
-        records: session.records,
+        scheduledStart: matchedSchedule.startTime,
+        scheduledEnd: matchedSchedule.endTime,
+        tip: "The server auto-creates sessions on a 60-second cycle.",
       });
     }
 
@@ -484,7 +438,7 @@ const handleRecognition = async (req, res) => {
 
     // Anyone who shows up during the session = PRESENT or LATE
     // ABSENT is only assigned at session end — never during a live session
-    const status = minutesLate > LATE_THRESHOLD_MIN ? "LATE" : "PRESENT";
+    const status = minutesLate >= LATE_THRESHOLD_MIN ? "LATE" : "PRESENT";
 
     // Update the attendance record
     const updatedRecord = await prisma.attendanceRecord.update({

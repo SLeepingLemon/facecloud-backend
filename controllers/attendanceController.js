@@ -17,8 +17,6 @@
 const { addClient, removeClient, broadcast } = require("../utils/sseManager");
 const prisma = require("../utils/prisma");
 
-const LATE_THRESHOLD_MIN = parseInt(process.env.LATE_THRESHOLD_MINUTES || "15");
-
 // ─────────────────────────────────────────────
 // SSE Stream
 // GET /api/attendance/stream/:sessionId?token=<jwt>
@@ -155,11 +153,15 @@ const createSession = async (req, res) => {
       return res.status(404).json({ message: "Subject not found" });
     }
 
-    // Check if there is already an ongoing session for this subject+section
-    const existingWhere = { subjectId: parsedSubjectId, status: "ONGOING" };
-    if (section) existingWhere.section = section;
+    // Check if there is already an ongoing session for this subject+section.
+    // section: null means "no section" — always filter explicitly so a session
+    // for BSCPE3-1 cannot block creation for BSCPE3-2 (or vice versa).
     const existing = await prisma.attendanceSession.findFirst({
-      where: existingWhere,
+      where: {
+        subjectId: parsedSubjectId,
+        status: "ONGOING",
+        section: section || null,
+      },
     });
     if (existing) {
       return res.status(400).json({
@@ -288,6 +290,15 @@ const createSession = async (req, res) => {
         `scheduled ${scheduledStart.toLocaleTimeString()}–${scheduledEnd.toLocaleTimeString()} | ` +
         `actual start: ${now.toLocaleTimeString()}`,
     );
+
+    // Notify any open TeacherDashboard tabs via SSE
+    broadcast(fullSession.id, "session_started", {
+      sessionId: fullSession.id,
+      subjectId: parsedSubjectId,
+      scheduledStart,
+      scheduledEnd,
+    });
+
     res.status(201).json({ message: "Session started", session: fullSession });
   } catch (error) {
     console.error("Error creating session:", error);
@@ -323,13 +334,32 @@ const endSession = async (req, res) => {
 
     const now = new Date();
 
+    // Mark PENDING → ABSENT first, then close the session.
+    // Order matters: if the process crashes between the two writes,
+    // an ONGOING session with un-marked records is recoverable
+    // (auto-close job will catch it). A COMPLETED session with
+    // PENDING records stuck forever is not.
+    const updated = await prisma.attendanceRecord.updateMany({
+      where: { sessionId, status: "PENDING" },
+      data: {
+        status: "ABSENT",
+        remarks: "Not scanned — manually ended by teacher",
+      },
+    });
+
     // Close the session
     await prisma.attendanceSession.update({
       where: { id: sessionId },
       data: { status: "COMPLETED", actualEnd: now },
     });
 
-    console.log(`[Session] ✅ MANUAL END — Session ${sessionId}`);
+    console.log(
+      `[Session] ✅ MANUAL END — Session ${sessionId} | ${updated.count} student(s) marked ABSENT`,
+    );
+
+    // Notify open dashboards via SSE
+    broadcast(sessionId, "session_ended", { sessionId, endedAt: now });
+
     res.json({ message: "Session ended successfully" });
   } catch (error) {
     console.error("Error ending session:", error);

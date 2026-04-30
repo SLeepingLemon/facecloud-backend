@@ -160,6 +160,137 @@ setInterval(autoCloseExpiredSessions, 60 * 1000);
 console.log("⏰ Auto-close job started — checks every 60 seconds");
 
 // ─────────────────────────────────────────────
+// Background job — auto-create scheduled sessions
+//
+// Runs every 60 seconds. Finds every SubjectSchedule whose
+// time window contains NOW and creates an ONGOING session for it
+// if one doesn't already exist.
+//
+// This is the sole mechanism for automatic session creation —
+// the Pi only reads sessions, it never creates them.
+// ─────────────────────────────────────────────
+async function autoCreateScheduledSessions() {
+  try {
+    const now = new Date();
+    const today = now.getDay(); // 0=Sun … 6=Sat
+    const nowHHMM = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+    // Find every schedule whose window contains NOW.
+    // Ordered by startTime so earlier slots are evaluated first —
+    // important at boundary minutes where two consecutive slots both match.
+    const activeSchedules = await prisma.subjectSchedule.findMany({
+      where: {
+        dayOfWeek: today,
+        startTime: { lte: nowHHMM },
+        endTime: { gte: nowHHMM },
+      },
+      include: {
+        subject: {
+          include: {
+            enrollments: { include: { student: true } },
+          },
+        },
+      },
+      orderBy: { startTime: "asc" },
+    });
+
+    for (const schedule of activeSchedules) {
+      const scheduledStart = new Date(`${dateStr}T${schedule.startTime}:00`);
+      const scheduledEnd = new Date(`${dateStr}T${schedule.endTime}:00`);
+
+      // Check if a session is already ONGOING for this subject + section
+      const existing = await prisma.attendanceSession.findFirst({
+        where: {
+          subjectId: schedule.subjectId,
+          status: "ONGOING",
+          section: schedule.section || null,
+        },
+      });
+
+      if (existing) {
+        // Consecutive schedule check:
+        // If the existing session ends exactly when this schedule begins
+        // (same subject, same section, back-to-back blocks), close the
+        // old session immediately so the new one can start without a gap.
+        const existingEnd = new Date(existing.scheduledEnd);
+        const existingEndHHMM = `${String(existingEnd.getHours()).padStart(2, "0")}:${String(existingEnd.getMinutes()).padStart(2, "0")}`;
+        const isConsecutive =
+          existingEnd <= now && existingEndHHMM === schedule.startTime;
+
+        if (!isConsecutive) continue; // Normal case — session is still mid-run
+
+        // Close the expiring session before starting the next block
+        await prisma.attendanceRecord.updateMany({
+          where: { sessionId: existing.id, status: "PENDING" },
+          data: {
+            status: "ABSENT",
+            remarks: "Not scanned — auto-marked absent at session end",
+          },
+        });
+        await prisma.attendanceSession.update({
+          where: { id: existing.id },
+          data: { status: "COMPLETED", actualEnd: now },
+        });
+        console.log(
+          `[AutoCreate] Closed consecutive session ${existing.id} ` +
+            `(${existingEndHHMM}) → starting next block (${schedule.startTime})`,
+        );
+        broadcast(existing.id, "session_ended", {
+          sessionId: existing.id,
+          endedAt: now,
+        });
+        // Fall through to create the new session below
+      }
+
+      // Filter enrolled students by section when the schedule targets a section
+      const enrollments = schedule.section
+        ? schedule.subject.enrollments.filter(
+            (e) => e.student.section === schedule.section,
+          )
+        : schedule.subject.enrollments;
+
+      const session = await prisma.attendanceSession.create({
+        data: {
+          subjectId: schedule.subjectId,
+          section: schedule.section || null,
+          date: now,
+          scheduledStart,
+          scheduledEnd,
+          status: "ONGOING",
+          actualStart: now,
+          records: {
+            create: enrollments.map((e) => ({
+              studentId: e.studentId,
+              status: "PENDING",
+            })),
+          },
+        },
+      });
+
+      console.log(
+        `[AutoCreate] ✅ Session ${session.id} — ` +
+          `${schedule.subject.name}${schedule.section ? ` [${schedule.section}]` : ""} ` +
+          `(${schedule.startTime}–${schedule.endTime}) | ${enrollments.length} student(s)`,
+      );
+
+      broadcast(session.id, "session_started", {
+        sessionId: session.id,
+        subjectId: schedule.subjectId,
+        scheduledStart,
+        scheduledEnd,
+      });
+    }
+  } catch (err) {
+    console.error("[AutoCreate] ❌ Error:", err.message);
+  }
+}
+
+autoCreateScheduledSessions();
+setInterval(autoCreateScheduledSessions, 60 * 1000);
+console.log("⏰ Auto-create job started — checks every 60 seconds");
+
+// ─────────────────────────────────────────────
 // Start server
 // ─────────────────────────────────────────────
 const server = app.listen(PORT, () => {

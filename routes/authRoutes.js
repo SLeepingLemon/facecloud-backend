@@ -9,9 +9,7 @@
 const express = require("express");
 const router = express.Router();
 const {
-  register,
   registerByAdmin,
-  login,
   googleAuth,
   getAllUsers,
   updateUser,
@@ -26,9 +24,6 @@ router.post(
   authorize(["ADMIN"]),
   registerByAdmin,
 );
-
-// Public — login (email + password)
-router.post("/login", login);
 
 // Public — Google SSO login
 // Body: { credential } — ID token from Google's sign-in button

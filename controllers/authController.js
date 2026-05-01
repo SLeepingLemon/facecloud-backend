@@ -12,7 +12,6 @@
  * Place this file at: src/controllers/authController.js
  */
 
-const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const prisma = require("../utils/prisma");
 const { OAuth2Client } = require("google-auth-library");
@@ -25,55 +24,12 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const VALID_TITLES = ["Engr.", "Dr.", "Prof.", "Mr.", "Ms.", "Mrs."];
 
 // ─────────────────────────────────────────────
-// Public registration (TEACHER only)
-// Kept for backwards compatibility — uses raw name field
-// ─────────────────────────────────────────────
-const register = async (req, res) => {
-  try {
-    const { name, email, password, role } = req.body;
-
-    if (!name || !email || !password) {
-      return res
-        .status(400)
-        .json({ message: "Name, email, and password are required" });
-    }
-
-    if (role && role !== "TEACHER") {
-      return res.status(403).json({
-        message: "Public registration is for teachers only.",
-      });
-    }
-
-    const existingUser = await prisma.user.findUnique({ where: { email } });
-    if (existingUser) {
-      return res
-        .status(400)
-        .json({ message: "An account with this email already exists" });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await prisma.user.create({
-      data: { name, email, password: hashedPassword, role: "TEACHER" },
-    });
-
-    console.log("✅ Teacher registered:", user.email);
-    res
-      .status(201)
-      .json({ message: "Account created successfully", role: user.role });
-  } catch (error) {
-    console.error("❌ Registration error:", error);
-    res
-      .status(500)
-      .json({ message: "Registration failed", error: error.message });
-  }
-};
-
-// ─────────────────────────────────────────────
 // Admin-only: create TEACHER or ADMIN account
 // Accepts either:
-//   A) Pre-formatted name:  { name, email, password, role }
-//   B) Split name fields:   { title, firstName, middleInitial, lastName, email, password, role }
+//   A) Pre-formatted name:  { name, email, role }
+//   B) Split name fields:   { title, firstName, middleInitial, lastName, email, role }
 //      → assembled into:   "Engr. Juan R. Dela Cruz"
+// All accounts authenticate via Google SSO — no password stored.
 // ─────────────────────────────────────────────
 const registerByAdmin = async (req, res) => {
   try {
@@ -87,7 +43,6 @@ const registerByAdmin = async (req, res) => {
       name: rawName,
       // Common fields
       email,
-      password,
       role,
     } = req.body;
 
@@ -144,18 +99,8 @@ const registerByAdmin = async (req, res) => {
         .json({ message: "An account with this email already exists" });
     }
 
-    let hashedPassword = null;
-    if (password) {
-      if (password.length < 6) {
-        return res
-          .status(400)
-          .json({ message: "Password must be at least 6 characters" });
-      }
-      hashedPassword = await bcrypt.hash(password, 10);
-    }
-
     const user = await prisma.user.create({
-      data: { name, email, password: hashedPassword, role },
+      data: { name, email, role },
     });
 
     console.log(
@@ -171,57 +116,6 @@ const registerByAdmin = async (req, res) => {
     res
       .status(500)
       .json({ message: "Registration failed", error: error.message });
-  }
-};
-
-// ─────────────────────────────────────────────
-// Login
-// ─────────────────────────────────────────────
-const login = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res
-        .status(400)
-        .json({ message: "Email and password are required" });
-    }
-
-    const user = await prisma.user.findUnique({ where: { email } });
-
-    if (!user) {
-      return res.status(400).json({ message: "Invalid email or password" });
-    }
-
-    // SSO-only users have no password — direct them to Google login
-    if (!user.password) {
-      return res.status(400).json({
-        message:
-          "This account uses Google Sign-In. Please use the 'Sign in with Google' button.",
-      });
-    }
-
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) {
-      return res.status(400).json({ message: "Invalid email or password" });
-    }
-
-    const token = jwt.sign(
-      { userId: user.id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" },
-    );
-
-    console.log("✅ Login:", user.email, "—", user.role);
-    res.json({
-      token,
-      role: user.role,
-      name: user.name, // full formatted name e.g. "Engr. Juan R. Dela Cruz"
-      message: "Login successful",
-    });
-  } catch (error) {
-    console.error("❌ Login error:", error);
-    res.status(500).json({ message: "Login failed", error: error.message });
   }
 };
 
@@ -429,9 +323,7 @@ const deleteUser = async (req, res) => {
 };
 
 module.exports = {
-  register,
   registerByAdmin,
-  login,
   googleAuth,
   getAllUsers,
   updateUser,

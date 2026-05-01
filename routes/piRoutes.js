@@ -7,6 +7,7 @@
  * Place this file at: src/routes/piRoutes.js
  */
 
+const crypto = require("crypto");
 const express = require("express");
 const router = express.Router();
 const piController = require("../controllers/piController");
@@ -19,12 +20,16 @@ const authenticatePi = (req, res, next) => {
   const key = req.headers["x-device-key"];
   const expected = process.env.PI_DEVICE_KEY;
 
-  // DEBUG — logs what the Pi actually sends vs what .env has
-  console.log("[PI AUTH] Received key :", JSON.stringify(key));
-  console.log("[PI AUTH] Expected key :", JSON.stringify(expected));
-  console.log("[PI AUTH] Match        :", key === expected);
+  let valid = false;
+  if (key && expected) {
+    const keyBuf = Buffer.from(key);
+    const expectedBuf = Buffer.from(expected);
+    valid =
+      keyBuf.length === expectedBuf.length &&
+      crypto.timingSafeEqual(keyBuf, expectedBuf);
+  }
 
-  if (!key || key !== expected) {
+  if (!valid) {
     console.warn("[PI] Rejected — invalid or missing device key");
     return res.status(401).json({ message: "Unauthorized device" });
   }

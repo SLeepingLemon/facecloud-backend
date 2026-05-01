@@ -334,24 +334,19 @@ const endSession = async (req, res) => {
 
     const now = new Date();
 
-    // Mark PENDING → ABSENT first, then close the session.
-    // Order matters: if the process crashes between the two writes,
-    // an ONGOING session with un-marked records is recoverable
-    // (auto-close job will catch it). A COMPLETED session with
-    // PENDING records stuck forever is not.
-    const updated = await prisma.attendanceRecord.updateMany({
-      where: { sessionId, status: "PENDING" },
-      data: {
-        status: "ABSENT",
-        remarks: "Not scanned — manually ended by teacher",
-      },
-    });
-
-    // Close the session
-    await prisma.attendanceSession.update({
-      where: { id: sessionId },
-      data: { status: "COMPLETED", actualEnd: now },
-    });
+    const [updated] = await prisma.$transaction([
+      prisma.attendanceRecord.updateMany({
+        where: { sessionId, status: "PENDING" },
+        data: {
+          status: "ABSENT",
+          remarks: "Not scanned — manually ended by teacher",
+        },
+      }),
+      prisma.attendanceSession.update({
+        where: { id: sessionId },
+        data: { status: "COMPLETED", actualEnd: now },
+      }),
+    ]);
 
     console.log(
       `[Session] ✅ MANUAL END — Session ${sessionId} | ${updated.count} student(s) marked ABSENT`,

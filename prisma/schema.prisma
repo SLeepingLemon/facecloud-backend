@@ -139,6 +139,7 @@ model AttendanceSession {
   actualStart    DateTime?
   actualEnd      DateTime?
   status         SessionStatus @default(SCHEDULED)
+  endNote        String?       // Teacher note when manually ending a session
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 

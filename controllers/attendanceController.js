@@ -319,6 +319,7 @@ const createSession = async (req, res) => {
 const endSession = async (req, res) => {
   try {
     const sessionId = parseInt(req.params.sessionId);
+    const { notes } = req.body;
 
     const session = await prisma.attendanceSession.findUnique({
       where: { id: sessionId },
@@ -344,7 +345,11 @@ const endSession = async (req, res) => {
       }),
       prisma.attendanceSession.update({
         where: { id: sessionId },
-        data: { status: "COMPLETED", actualEnd: now },
+        data: {
+          status: "COMPLETED",
+          actualEnd: now,
+          endNote: notes?.trim() || null,
+        },
       }),
     ]);
 
